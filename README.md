@@ -17,6 +17,8 @@ Guardian Eye 是一個基於 Node.js 和 Qt 的智慧安全系統，支援遠端
 ```
 guardian_eye_remote/
 ├── server.js              # Node.js 主伺服器
+├── discord_bot.js         # Discord Bot（選用）
+├── .env.example           # 環境變數範本
 ├── public/                # 靜態網頁檔案
 │   ├── index.html         # 主頁面
 │   ├── style.css          # 樣式表
@@ -37,13 +39,58 @@ npm --version   # 應顯示 8.x.x 或更高
 
 ```bash
 cd guardian_eye_remote
+
+# 安裝網頁伺服器依賴
 npm install express
+
+# 安裝 Discord Bot 依賴（選用，如果要使用 Discord 功能）
+npm install discord.js dotenv
 ```
 
-### 3. 啟動伺服器
+### 3. 配置環境變數（選用 - Discord Bot）
+
+如果要使用 Discord Bot 功能：
 
 ```bash
+# 複製環境變數範本
+cp .env.example .env
+
+# 編輯 .env 填入你的 Discord Token
+nano .env
+```
+
+`.env` 內容範例：
+```env
+DISCORD_TOKEN=你的_Discord_Bot_Token
+DISCORD_CHANNEL_ID=你的頻道ID（可選）
+UNLOCK_PASSWORD=1234
+PORT=8080
+```
+
+**取得 Discord Token 步驟：**
+1. 前往 [Discord Developer Portal](https://discord.com/developers/applications)
+2. 點擊「New Application」建立新應用
+3. 進入「Bot」頁面 → 「Add Bot」
+4. 在「TOKEN」區域點擊「Reset Token」→ 複製 Token
+5. 貼到 `.env` 的 `DISCORD_TOKEN=` 後面
+6. 開啟「Privileged Gateway Intents」中的：
+   - MESSAGE CONTENT INTENT（必須）
+   - SERVER MEMBERS INTENT（建議）
+
+**邀請 Bot 到伺服器：**
+1. 在 Developer Portal 進入「OAuth2」→「URL Generator」
+2. 勾選 Scopes: `bot`
+3. 勾選 Bot Permissions: `Send Messages`, `Read Messages/View Channels`, `Attach Files`, `Embed Links`
+4. 複製生成的 URL 到瀏覽器，選擇伺服器邀請 Bot
+
+### 4. 啟動伺服器
+
+```bash
+# 只啟動網頁伺服器
 node server.js
+
+# 或同時啟動 Discord Bot（另開終端）
+node discord_bot.js
 ```
 
 成功啟動後會顯示：
@@ -63,19 +110,45 @@ node server.js
 
 ## 使用方式
 
-### 手機訪問
+### 方式 1: 網頁控制（必須）
+
+#### 手機訪問
 
 1. 確保手機和 TX2 連接同一 WiFi
 2. 在 TX2 上執行 `hostname -I` 取得 IP 位址
 3. 在手機瀏覽器輸入：`http://<TX2_IP>:8080`
 
-### 遠端解鎖流程
+#### 遠端解鎖流程
 
 1. **警報觸發**：系統偵測到入侵，手機顯示警報
 2. **輸入密碼**：在手機網頁輸入解鎖密碼（預設：1234）
 3. **驗證通過**：伺服器驗證密碼正確
 4. **現場確認**：Qt 介面顯示隨機碼，需在現場輸入
 5. **完全解鎖**：兩步驗證完成，系統解除警報
+
+### 方式 2: Discord 控制（選用加分項）
+
+#### Discord Bot 指令
+
+- `!unlock <密碼>` - 遠端解鎖系統
+  - 例如：`!unlock 1234`
+- `!status` - 查詢系統當前狀態
+- `!help` - 顯示幫助訊息
+
+#### Discord 警報推播
+
+當系統偵測到入侵時，Discord Bot 會自動：
+1. 發送警報訊息到指定頻道
+2. 附加入侵者照片（如果有）
+3. 提示使用者輸入解鎖密碼
+
+#### Discord 解鎖流程
+
+1. **收到警報**：Bot 自動推送警報訊息到 Discord
+2. **輸入密碼**：在 Discord 輸入 `!unlock 1234`
+3. **驗證通過**：Bot 回覆驗證成功
+4. **現場確認**：Qt 介面顯示隨機碼
+5. **完全解鎖**：在現場輸入隨機碼完成解鎖
 
 ## API 文件
 
@@ -186,12 +259,35 @@ node server.js
 
 Qt 需每秒檢查此檔案，讀取後執行指令並刪除檔案。
 
+#### 4. Discord 推播佇列（Qt 寫入，Discord Bot 讀取）
+**檔案：** `/tmp/guardian_discord_queue.json`
+
+```json
+{
+  "type": "pig_intrusion",
+  "message": "🚨 偵測到小豬玩偶入侵！",
+  "timestamp": "2025-01-09 14:25:05",
+  "image_path": "/tmp/guardian_images/intrusion_001.jpg",
+  "priority": "high"
+}
+```
+
+Discord Bot 會每秒輪詢此檔案，讀取後發送到 Discord 並刪除檔案。
+
 ## 配置選項
 
 ### 更改密碼
 
-使用環境變數設定：
+**方法 1: 使用 .env 檔案（推薦）**
+```bash
+# 編輯 .env
+nano .env
 
+# 修改密碼
+UNLOCK_PASSWORD=mypassword
+```
+
+**方法 2: 使用環境變數**
 ```bash
 export UNLOCK_PASSWORD="mypassword"
 node server.js
@@ -199,8 +295,14 @@ node server.js
 
 ### 更改端口
 
-修改 [server.js:6](server.js#L6)：
+**方法 1: 使用 .env 檔案**
+```env
+PORT=8080
+```
 
+**方法 2: 修改程式碼**
+
+修改 [server.js:77](server.js#L77)：
 ```javascript
 const PORT = 8080;  // 改成你想要的端口
 ```
@@ -292,27 +394,88 @@ pkill node
 node server.js
 ```
 
-## 系統需求
+### Q4: Discord Bot 無法啟動？
 
-- **作業系統**：Linux (TX2)
-- **Node.js**：v16.x 或更高
-- **網路**：WiFi 區域網路
-- **瀏覽器**：支援現代瀏覽器（Chrome、Safari、Firefox）
+**檢查步驟：**
 
-## 技術架構
+1. 確認已安裝依賴：
+   ```bash
+   npm list discord.js dotenv
+   ```
 
-- **後端**：Node.js + Express.js
-- **前端**：原生 HTML/CSS/JavaScript
-- **通訊**：檔案共享（輪詢機制）
-- **資料格式**：JSON
+2. 確認 `.env` 存在且已設定 Token：
+   ```bash
+   cat .env | grep DISCORD_TOKEN
+   ```
 
-## 開發團隊
+3. 檢查 Token 是否有效（在 Developer Portal 確認）
 
-NTUT 微處理機系統實驗 - Final Project
+4. 確認 Bot 權限：
+   - MESSAGE CONTENT INTENT 必須開啟
+   - Bot 已加入伺服器
 
-## 授權
+### Q5: Discord Bot 收不到警報？
 
-MIT License
+確認 Qt 有正確寫入佇列檔案：
+```bash
+# 手動測試
+echo '{
+  "type": "pig_intrusion",
+  "message": "🚨 測試警報",
+  "timestamp": "2025-01-09 14:25:05",
+  "priority": "high"
+}' > /tmp/guardian_discord_queue.json
+
+# 等待 1 秒後檢查檔案是否被刪除（表示 Bot 已讀取）
+ls -l /tmp/guardian_discord_queue.json
+```
+
+### Q6: TX2 上 npm 安裝很慢？
+
+可以使用淘寶鏡像加速：
+```bash
+npm config set registry https://registry.npmmirror.com
+npm install express discord.js dotenv
+```
+
+## 完整啟動腳本
+
+創建 `start_all.sh` 方便一次啟動所有服務：
+
+```bash
+#!/bin/bash
+# start_all.sh
+
+echo "🚀 啟動 Guardian Eye 系統..."
+
+# 啟動網頁伺服器（背景）
+node server.js &
+SERVER_PID=$!
+echo "✅ 網頁伺服器已啟動 (PID: $SERVER_PID)"
+
+# 啟動 Discord Bot（如果 .env 存在）
+if [ -f ".env" ]; then
+  node discord_bot.js &
+  BOT_PID=$!
+  echo "✅ Discord Bot 已啟動 (PID: $BOT_PID)"
+fi
+
+echo "========================================"
+echo "📱 訪問網址：http://$(hostname -I | awk '{print $1}'):8080"
+echo "========================================"
+echo "按 Ctrl+C 關閉所有服務"
+
+# 等待中斷信號
+trap "echo '\\n👋 正在關閉服務...'; kill $SERVER_PID $BOT_PID 2>/dev/null; exit" SIGINT SIGTERM
+
+wait
+```
+
+使用方式：
+```bash
+chmod +x start_all.sh
+./start_all.sh
+```
 
 ---
 
