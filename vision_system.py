@@ -26,9 +26,21 @@ parser.add_argument('--camera', type=str, default='0', help='Camera index (defau
 args, unknown = parser.parse_known_args()
 
 # 嘗試載入 PyTorch 和 Face Recognition
+if args.qt_mode:
+    print(json.dumps({"status": "loading", "msg": "正在載入 AI 模型庫 (PyTorch/OpenCV)..."}))
+    sys.stdout.flush()
+
+print(f"[DEBUG] Python Version: {sys.version}")
+print(f"[DEBUG] Working Directory: {os.getcwd()}")
+
 try:
     import torch
     import face_recognition
+    print(f"[DEBUG] PyTorch Version: {torch.__version__}")
+    print(f"[DEBUG] OpenCV Version: {cv2.__version__}")
+    print(f"[DEBUG] CUDA Available: {torch.cuda.is_available()}")
+    if torch.cuda.is_available():
+        print(f"[DEBUG] CUDA Device: {torch.cuda.get_device_name(0)}")
 except ImportError as e:
     if args.qt_mode:
         print(json.dumps({"error": f"缺少必要套件: {e}"}))
@@ -71,21 +83,43 @@ class VisionSystem:
         print("[INFO] Initializing Vision System...")
         print("="*40)
 
+        if args.qt_mode:
+            print(json.dumps({"status": "loading", "msg": "正在初始化 YOLO 權重 (CUDA)..."}))
+            sys.stdout.flush()
+
         # 1. 載入 YOLO
         try:
             import models.yolo
             if not hasattr(models.yolo, 'DetectionModel'):
                 models.yolo.DetectionModel = models.yolo.Model
             
+            print(f"[DEBUG] Loading YOLO weights from: {yolo_weights}")
+            t0 = time.time()
             self.yolo = torch.hub.load(yolo_src_path, 'custom', path=yolo_weights, source='local')
-            self.yolo.to('cuda')
+            print(f"[DEBUG] YOLO loaded in {time.time() - t0:.2f} seconds")
+            
+            if torch.cuda.is_available():
+                self.yolo.to('cuda')
+                print("[INFO] YOLO moved to CUDA")
+            else:
+                print("[INFO] CUDA not available, using CPU")
             self.yolo_conf = yolo_conf
             self.yolo.eval()
         except Exception as e:
+            if args.qt_mode:
+                print(json.dumps({"error": f"YOLO 載入失敗: {e}"}))
+                sys.stdout.flush()
             print(f"[ERROR] Failed to load YOLO: {e}")
+            import traceback
+            traceback.print_exc()
             sys.exit(1)
 
         # 2. 載入人臉特徵
+        if args.qt_mode:
+            print(json.dumps({"status": "loading", "msg": "正在載入人臉資料庫..."}))
+            sys.stdout.flush()
+        
+        print(f"[DEBUG] Loading face encodings from: {face_encoding_file}")
         self.owner_encodings = []
         if os.path.exists(face_encoding_file):
             try:
@@ -94,6 +128,8 @@ class VisionSystem:
                 print(f"[INFO] Loaded {len(self.owner_encodings)} face identities.")
             except Exception as e:
                 print(f"[ERROR] Failed to load face file: {e}")
+                import traceback
+                traceback.print_exc()
         
         self.face_tolerance = face_tolerance
         self.motion_threshold = motion_threshold
@@ -134,14 +170,17 @@ class VisionSystem:
 
             # [軌道 A] : 找豬 (每 2 幀)
             if frame_count % 2 == 0:
+                t_yolo = time.time()
                 y_out = self.yolo(frame) 
                 det = y_out.xyxy[0].cpu().numpy()
+                print(f"[DEBUG] Frame {frame_count}: YOLO inference took {time.time() - t_yolo:.3f}s, found {len(det)} objects")
                 for d in det:
                     x1, y1, x2, y2, conf, cls = d
                     if int(cls) == 0 and conf > self.yolo_conf:
                         current_res['pig_detected'] = True
                         current_res['pig_conf'] = float(conf)
                         current_res['pig_bbox'] = [int(x1), int(y1), int(x2), int(y2)]
+                        print(f"[DEBUG] >> PIG detected! Conf: {conf:.2f}")
                         break 
             else:
                 current_res['pig_detected'] = self.last_result['pig_detected']
@@ -150,21 +189,26 @@ class VisionSystem:
 
             # [軌道 B] : 找人 (每 5 幀)
             if frame_count % 5 == 0:
+                t_face = time.time()
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 small_rgb = cv2.resize(rgb, (0, 0), fx=0.25, fy=0.25)
                 locs = face_recognition.face_locations(small_rgb, model="hog")
+                print(f"[DEBUG] Frame {frame_count}: Face detection took {time.time() - t_face:.3f}s, found {len(locs)} faces")
                 if len(locs) > 0:
                     current_res['person_detected'] = True
                     top, right, bottom, left = [v * 4 for v in locs[0]]
                     current_res['face_bbox'] = [left, top, right, bottom]
                     if self.owner_encodings:
+                        t_enc = time.time()
                         encs = face_recognition.face_encodings(rgb, [(top, right, bottom, left)])
                         if len(encs) > 0:
                             dists = face_recognition.face_distance(self.owner_encodings, encs[0])
                             min_dist = np.min(dists)
                             current_res['face_id'] = "OWNER" if min_dist < self.face_tolerance else "STRANGER"
+                            print(f"[DEBUG] >> Person identified: {current_res['face_id']} (Dist: {min_dist:.3f}, took {time.time() - t_enc:.3f}s)")
                     else:
                          current_res['face_id'] = "Human"
+                         print(f"[DEBUG] >> Person identified: Human (No encoding database)")
             else:
                 current_res['person_detected'] = self.last_result['person_detected']
                 current_res['face_id'] = self.last_result['face_id']
@@ -206,6 +250,10 @@ if __name__ == "__main__":
         print("Select Camera: [1] CSI Onboard  [2] USB Webcam")
         choice = input("Choice: ").strip()
     
+    if args.qt_mode:
+        print(json.dumps({"status": "loading", "msg": "正在開啟攝影機..."}))
+        sys.stdout.flush()
+
     system = VisionSystem()
     cap = None
     if choice == '1':
@@ -214,6 +262,7 @@ if __name__ == "__main__":
         # 1. 嘗試使用強健的 GStreamer Pipeline
         idx = int(choice) if not args.qt_mode else int(args.camera)
         gst_str = get_usb_gst_pipeline(idx)
+        print(f"[INFO] Trying GStreamer: {gst_str}")
         cap = cv2.VideoCapture(gst_str, cv2.CAP_GSTREAMER)
         
         # 2. 如果失敗，嘗試最基礎的 V4L2 模式
@@ -228,18 +277,33 @@ if __name__ == "__main__":
             cap = cv2.VideoCapture(alt_idx, cv2.CAP_V4L2)
 
     if not cap or not cap.isOpened():
-        print(json.dumps({"error": "Camera failed"}))
+        if args.qt_mode:
+            print(json.dumps({"error": "無法開啟攝影機"}))
+            sys.stdout.flush()
+        else:
+            print("[ERROR] Camera failed")
         sys.exit(1)
 
+    if args.qt_mode:
+        print(json.dumps({"status": "running", "msg": "系統已啟動"}))
+        sys.stdout.flush()
+
     frame_counter = 0
+    t_start = time.time()
     try:
         while True:
             ret, frame = cap.read()
             if not ret:
+                print("[WARN] Camera read failed")
                 time.sleep(0.01)
                 continue
             
             frame_counter += 1
+            if frame_counter % 100 == 0:
+                fps = 100 / (time.time() - t_start)
+                print(f"[DEBUG] Average FPS (last 100 frames): {fps:.2f}")
+                t_start = time.time()
+
             results = system.process_frame(frame, frame_counter)
             display = system.draw_hud(frame, results)
             
